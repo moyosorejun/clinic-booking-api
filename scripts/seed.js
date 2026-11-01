@@ -1,4 +1,5 @@
-// Loads a week of demo slots (wipes existing bookings).
+// Loads 90 days of demo slots (wipes existing bookings). Long enough that the
+// page still has free slots whenever someone reviews it.
 //   BASE_URL=https://your-app.vercel.app API_KEY=... npm run seed
 require('dotenv').config({ quiet: true });
 
@@ -6,7 +7,7 @@ const BASE = (process.env.BASE_URL || 'http://localhost:3000').replace(/\/$/, ''
 const doctors = ['Dr Ade', 'Dr Bello', 'Dr Chioma'];
 
 const slots = [];
-for (let d = 1; d <= 7; d++) {
+for (let d = 1; d <= 90; d++) {
   const date = new Date();
   date.setUTCDate(date.getUTCDate() + d);
   if ([0, 6].includes(date.getUTCDay())) continue; // weekdays only

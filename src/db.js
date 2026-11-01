@@ -1,4 +1,5 @@
 const { Pool } = require('pg');
+const { attachDatabasePool } = require('@vercel/functions');
 require('dotenv').config({ quiet: true });
 
 const isLocal = /localhost|127\.0\.0\.1/.test(process.env.DATABASE_URL || '');
@@ -9,6 +10,13 @@ const pool = new Pool({
   ssl: isLocal ? false : { rejectUnauthorized: false },
   max: 5,
 });
+
+// Neon closes idle connections when it scales to zero. Without this handler,
+// that error would crash the whole process.
+pool.on('error', (err) => console.error('idle database connection closed:', err.message));
+
+// Lets Vercel close idle connections cleanly before it suspends the function.
+attachDatabasePool(pool);
 
 // Run fn inside a transaction, rolling back if it throws.
 async function withTransaction(fn) {

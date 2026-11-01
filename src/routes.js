@@ -5,7 +5,6 @@ const {
   hashBody,
   findIdempotencyKey,
   createBooking,
-  checkRateLimit,
 } = require('./bookings');
 
 const isText = (v) => typeof v === 'string' && v.trim() !== '';
@@ -74,7 +73,7 @@ function sendSaved(res, saved, requestHash) {
   return res.status(saved.status_code).json(saved.response);
 }
 
-async function postBooking(req, res) {
+async function postBooking(req, res, ip) {
   const body = req.body;
   const key = req.get('Idempotency-Key');
   const requestHash = key ? hashBody(body) : null;
@@ -85,17 +84,9 @@ async function postBooking(req, res) {
     if (saved) return sendSaved(res, saved, requestHash);
   }
 
-  const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '';
-  if (email) {
-    const retryAfter = await checkRateLimit(email);
-    if (retryAfter) {
-      res.set('Retry-After', String(retryAfter));
-      return res.status(429).json({ error: 'too many booking attempts, try again later' });
-    }
-  }
-
-  const result = await createBooking(body, key, requestHash);
+  const result = await createBooking(body, key, requestHash, ip);
   if (result.saved) return sendSaved(res, result.saved, requestHash);
+  if (result.retryAfter) res.set('Retry-After', String(result.retryAfter));
   res.status(result.status).json(result.body);
 }
 
@@ -126,7 +117,7 @@ async function cancelBooking(req, res) {
 const encodeCursor = (seq) => Buffer.from(String(seq)).toString('base64url');
 const decodeCursor = (cursor) => {
   const seq = Buffer.from(cursor, 'base64url').toString();
-  return /^\d+$/.test(seq) ? seq : null;
+  return /^\d{1,18}$/.test(seq) ? seq : null; // 18 digits always fits a BIGINT
 };
 
 async function listBookings(req, res) {
@@ -162,14 +153,17 @@ async function listBookings(req, res) {
   });
 }
 
-// Same handlers for the keyed API and for the public web page (see app.js);
-// only the keyed API can reset.
-function buildRouter({ includeReset }) {
+// Same handlers for the keyed API and for the public web page (see app.js).
+// Only the keyed API can reset or list a person's bookings by email, and only
+// the public page is limited by IP.
+function buildRouter({ isPublic }) {
   const router = express.Router();
-  if (includeReset) router.post('/reset', reset);
+  if (!isPublic) {
+    router.post('/reset', reset);
+    router.get('/bookings', listBookings);
+  }
   router.get('/slots', listSlots);
-  router.post('/bookings', postBooking);
-  router.get('/bookings', listBookings);
+  router.post('/bookings', (req, res) => postBooking(req, res, isPublic ? req.ip : null));
   router.get('/bookings/:id', getBooking);
   router.delete('/bookings/:id', cancelBooking);
   return router;

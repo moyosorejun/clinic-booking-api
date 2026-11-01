@@ -51,6 +51,8 @@ const slots = [
   check('wrong key -> 401', (await call('GET', '/slots', { key: 'nope' })).status === 401);
 
   // Level 1
+  const manySlots = Array.from({ length: 1500 }, (_, i) => ({ id: `big${i}`, provider: 'Dr Big', start: inDays(1, 9), end: inDays(1, 10) }));
+  check('reset with months of slots -> 200', (await call('POST', '/reset', { body: { slots: manySlots } })).status === 200);
   check('reset -> 200', (await call('POST', '/reset', { body: { slots } })).status === 200);
   let r = await call('GET', '/slots');
   check('slots sorted by start', r.data.slots.map((s) => s.id).slice(0, 3).join() === 'past,s1,s2', JSON.stringify(r.data.slots.slice(0, 3)));
@@ -106,7 +108,8 @@ const slots = [
   check('different body, same key -> 422', (await call('POST', '/bookings', { body: { ...body, name: 'Other' }, headers: idem })).status === 422);
   const idem2 = { 'Idempotency-Key': `k2-${Date.now()}` };
   const body2 = { slot_id: 'p0', name: 'Idem2', email: 'idem2@x.com' };
-  const sameMoment = await Promise.all(Array.from({ length: 5 }, () => call('POST', '/bookings', { body: body2, headers: idem2 })));
+  // More than the rate limit: waiting retries must not count as new attempts.
+  const sameMoment = await Promise.all(Array.from({ length: 10 }, () => call('POST', '/bookings', { body: body2, headers: idem2 })));
   const ids = new Set(sameMoment.map((x) => x.data?.id));
   check('simultaneous retries -> one booking', sameMoment.every((x) => x.status === 201) && ids.size === 1, JSON.stringify(sameMoment.map((x) => x.status)));
   const idem3 = { 'Idempotency-Key': `k3-${Date.now()}` };
@@ -131,6 +134,8 @@ const slots = [
   check('limit=0 -> 400', (await call('GET', '/bookings?email=a@x.com&limit=0')).status === 400);
   check('limit=51 -> 400', (await call('GET', '/bookings?email=a@x.com&limit=51')).status === 400);
   check('limit=abc -> 400', (await call('GET', '/bookings?email=a@x.com&limit=abc')).status === 400);
+  const hugeCursor = Buffer.from('99999999999999999999999').toString('base64url');
+  check('oversized cursor -> 400', (await call('GET', `/bookings?email=a@x.com&cursor=${hugeCursor}`)).status === 400);
   r = await call('GET', '/bookings?email=a@x.com');
   check('no bookings -> empty page, null cursor', r.status === 200 && r.data.bookings.length === 0 && r.data.next_cursor === null);
 
@@ -148,6 +153,24 @@ const slots = [
   const retry = lastHeaders.get('retry-after');
   check('Retry-After in whole seconds', /^\d+$/.test(retry || '') && Number(retry) >= 1 && Number(retry) <= 60, retry);
   check('other emails unaffected', (await v({ slot_id: 'zzz', name: 'S', email: `other${Date.now()}@x.com` })) === 404);
+
+  // Public web routes: no key needed, but only what a patient needs
+  check('web page loads without a key', (await fetch(`${BASE}/`)).status === 200);
+  check('/web/slots works without a key', (await call('GET', '/web/slots', { key: null })).status === 200);
+  check('/web can\'t list bookings by email', (await call('GET', '/web/bookings?email=pager@x.com', { key: null })).status === 401);
+  check('/web can\'t reset', (await call('POST', '/web/reset', { body: { slots: [] }, key: null })).status === 401);
+  const hugeBody = await call('POST', '/web/bookings', { body: { name: 'x'.repeat(200000) }, key: null });
+  check('oversized /web body -> 413 {error}', hugeBody.status === 413 && typeof hugeBody.data?.error === 'string', hugeBody.status);
+  const webStatuses = [];
+  let webHeaders;
+  for (let i = 0; i < 11; i++) {
+    const x = await call('POST', '/web/bookings', { body: { slot_id: 'zzz', name: 'S', email: `web${i}-${Date.now()}@x.com` }, key: null });
+    webStatuses.push(x.status);
+    webHeaders = x.headers;
+  }
+  check('/web: 10 attempts per IP allowed, whatever the email', webStatuses.slice(0, 10).every((s) => s === 404), webStatuses.join());
+  check('/web: 11th attempt from that IP -> 429', webStatuses[10] === 429 && /^\d+$/.test(webHeaders.get('retry-after') || ''), webStatuses.join());
+  check('keyed API not limited by IP', (await v({ slot_id: 'zzz', name: 'S', email: `keyed${Date.now()}@x.com` })) === 404);
 
   console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');
   process.exit(failures ? 1 : 0);

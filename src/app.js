@@ -4,7 +4,7 @@ const express = require('express');
 const { buildRouter } = require('./routes');
 
 const app = express();
-app.set('trust proxy', true);
+app.set('trust proxy', 1); // only the host's own proxy, so callers can't fake their IP
 
 function sameSecret(a, b) {
   const hash = (s) => crypto.createHash('sha256').update(s).digest();
@@ -22,14 +22,16 @@ function requireApiKey(req, res, next) {
 
 // The web page. Patients shouldn't need (or be able to see) the API key, so
 // the page calls /web/*, which runs the same handlers without the key check.
-// Rate limiting still applies there, and /web has no reset.
+// It's limited to what a patient needs: no reset and no listing by email, plus
+// a per-IP rate limit on top of the per-email one.
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
-app.use('/web', express.json(), buildRouter({ includeReset: false }));
+app.use('/web', express.json(), buildRouter({ isPublic: true }));
 
 // The API: key checked before anything else, including body parsing.
-app.use(requireApiKey, express.json(), buildRouter({ includeReset: true }));
+// A larger body limit than /web, because /reset can carry months of slots.
+app.use(requireApiKey, express.json({ limit: '2mb' }), buildRouter({ isPublic: false }));
 
 app.use((req, res) => {
   res.status(404).json({ error: 'not found' });
@@ -39,6 +41,9 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   if (err.type === 'entity.parse.failed') {
     return res.status(400).json({ error: 'request body is not valid JSON' });
+  }
+  if (err.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'request body is too large' });
   }
   if (err.code === '23505') {
     // unique index backstop: a confirmed booking already exists for the slot

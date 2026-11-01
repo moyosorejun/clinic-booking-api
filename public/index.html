@@ -53,10 +53,6 @@
   .badge { display: inline-block; padding: 2px 8px; border-radius: 99px; font-size: 12px; font-weight: 600; }
   .badge.confirmed { background: var(--accent-soft); color: var(--accent); }
   .badge.cancelled { background: #f1f2f4; color: var(--muted); }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  td, th { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
-  th { color: var(--muted); font-weight: 500; }
-  .table-wrap { overflow-x: auto; }
   .empty { color: var(--muted); }
 </style>
 </head>
@@ -92,20 +88,12 @@
     </form>
     <div id="lookup-result"></div>
   </section>
-
-  <section class="card">
-    <h2>My bookings</h2>
-    <form id="mine-form" class="row">
-      <input id="mine-email" type="email" placeholder="Your email" style="flex: 1; min-width: 200px;">
-      <button type="submit" class="secondary">Show</button>
-    </form>
-    <div id="mine-result"></div>
-  </section>
 </main>
 
 <script>
   const API = '/web';
   let slots = [];
+  let daysShown = 5;
   let selected = null;
   let pendingKey = null; // reused if the same booking is resubmitted
 
@@ -163,10 +151,14 @@
     }
     let html = '';
     let lastDay = '';
+    let dayCount = 0;
+    let more = false;
     for (const s of upcoming) {
       const d = day(s.start);
       if (d !== lastDay) {
         if (lastDay) html += '</div>';
+        dayCount += 1;
+        if (dayCount > daysShown) { more = true; break; }
         html += `<div class="day">${esc(d)}</div><div class="slots">`;
         lastDay = d;
       }
@@ -174,10 +166,17 @@
       html += `<button type="button" class="slot ${isSelected ? 'selected' : ''}" data-id="${esc(s.id)}"
         ${s.available ? '' : 'disabled'}>${when(s.start)} – ${when(s.end)}<small>${esc(s.provider)}</small></button>`;
     }
-    $('slots').innerHTML = html + '</div>';
+    $('slots').innerHTML = html + (more
+      ? '<button type="button" class="secondary" id="more-days" style="margin-top: 12px;">Show more days</button>'
+      : '</div>');
   }
 
   $('slots').addEventListener('click', (e) => {
+    if (e.target.id === 'more-days') {
+      daysShown += 5;
+      renderSlots();
+      return;
+    }
     const btn = e.target.closest('.slot');
     if (!btn) return;
     selected = slots.find((s) => s.id === btn.dataset.id);
@@ -278,50 +277,6 @@
     e.preventDefault();
     const id = $('lookup-id').value.trim();
     if (id) lookUp(id);
-  });
-
-  // --- my bookings (paged) ---
-
-  let mineCursor = null;
-
-  async function loadMine(append) {
-    const email = $('mine-email').value.trim();
-    if (!email) return;
-    let path = `/bookings?email=${encodeURIComponent(email)}&limit=5`;
-    if (append && mineCursor) path += `&cursor=${encodeURIComponent(mineCursor)}`;
-    try {
-      const data = await api(path);
-      mineCursor = data.next_cursor;
-      const rows = data.bookings.map((b) => {
-        const slot = slots.find((s) => s.id === b.slot_id);
-        return `<tr><td>${slot ? `${esc(day(slot.start))}, ${when(slot.start)}` : esc(b.slot_id)}</td>
-          <td>${slot ? esc(slot.provider) : ''}</td>
-          <td><span class="badge ${b.status}">${b.status}</span></td>
-          <td><button class="secondary" data-id="${esc(b.id)}" style="padding: 4px 10px;">View</button></td></tr>`;
-      }).join('');
-      if (!append) {
-        $('mine-result').innerHTML = data.bookings.length
-          ? `<div class="table-wrap"><table><thead><tr><th>When</th><th>Doctor</th><th>Status</th><th></th></tr></thead>
-             <tbody id="mine-rows"></tbody></table></div><div id="mine-more"></div>`
-          : '<p class="empty">No bookings for that email.</p>';
-      }
-      if (!data.bookings.length) return;
-      $('mine-rows').insertAdjacentHTML('beforeend', rows);
-      $('mine-more').innerHTML = mineCursor
-        ? '<button class="secondary" id="more-btn" style="margin-top: 12px;">Load more</button>' : '';
-      if (mineCursor) $('more-btn').onclick = () => loadMine(true);
-    } catch (err) {
-      showMsg($('mine-result'), err.message, 'error');
-    }
-  }
-
-  $('mine-form').addEventListener('submit', (e) => { e.preventDefault(); loadMine(false); });
-  $('mine-result').addEventListener('click', (e) => {
-    const id = e.target.dataset.id;
-    if (!id) return;
-    $('lookup-id').value = id;
-    lookUp(id);
-    $('lookup-id').scrollIntoView({ behavior: 'smooth', block: 'center' });
   });
 
   loadSlots();

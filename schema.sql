@@ -36,8 +36,8 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
 
 CREATE TABLE IF NOT EXISTS booking_attempts (
   id           BIGSERIAL PRIMARY KEY,
-  email        TEXT NOT NULL,
+  rate_key     TEXT NOT NULL,             -- 'email:<address>' or 'ip:<address>'
   attempted_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
-CREATE INDEX IF NOT EXISTS booking_attempts_by_email ON booking_attempts (email, attempted_at);
+CREATE INDEX IF NOT EXISTS booking_attempts_by_key ON booking_attempts (rate_key, attempted_at);

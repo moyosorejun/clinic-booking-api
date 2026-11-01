@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { pool, withTransaction } = require('./db');
 
 const MAX_ATTEMPTS_PER_MINUTE = 5;
+const MAX_WEB_ATTEMPTS_PER_MINUTE = 10;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function toBooking(row) {
@@ -77,8 +78,10 @@ async function findIdempotencyKey(key) {
 
 // Creates a booking. With an idempotency key, the key is claimed in the same
 // transaction as the booking: a concurrent request with the same key blocks on
-// the INSERT until this one commits, then reads back the saved response.
-async function createBooking(body, idempotencyKey, requestHash) {
+// the INSERT until this one commits, then reads back the saved response. Rate
+// limits are checked after the claim, so those waiting retries don't count as
+// new attempts. Pass ip to also limit by caller (the public web page does).
+async function createBooking(body, idempotencyKey, requestHash, ip) {
   return withTransaction(async (client) => {
     if (idempotencyKey) {
       const claimed = await client.query(
@@ -95,6 +98,15 @@ async function createBooking(body, idempotencyKey, requestHash) {
       }
     }
 
+    const retryAfter = await checkRateLimits(client, body, ip);
+    if (retryAfter) {
+      // Not an answer to replay: free the key so a later retry can go through.
+      if (idempotencyKey) {
+        await client.query('DELETE FROM idempotency_keys WHERE key = $1', [idempotencyKey]);
+      }
+      return { status: 429, body: { error: 'too many booking attempts, try again later' }, retryAfter };
+    }
+
     const result = await bookSlot(client, body);
 
     if (idempotencyKey) {
@@ -107,27 +119,36 @@ async function createBooking(body, idempotencyKey, requestHash) {
   });
 }
 
-// Records a booking attempt for this email. Returns 0 if allowed, otherwise
-// the number of seconds until the oldest attempt in the window expires.
-async function checkRateLimit(email) {
-  return withTransaction(async (client) => {
-    // One lock per email so simultaneous attempts are counted one at a time.
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [email]);
-    await client.query(
-      "DELETE FROM booking_attempts WHERE email = $1 AND attempted_at <= clock_timestamp() - interval '60 seconds'",
-      [email]
-    );
-    const { rows } = await client.query(
-      `SELECT count(*)::int AS attempts,
-              ceil(extract(epoch FROM min(attempted_at) + interval '60 seconds' - clock_timestamp()))::int AS wait
-       FROM booking_attempts WHERE email = $1`,
-      [email]
-    );
-    if (rows[0].attempts >= MAX_ATTEMPTS_PER_MINUTE) return Math.max(1, rows[0].wait);
+// Returns 0 if the attempt is allowed, otherwise the seconds to wait. The IP
+// goes first so a blocked caller doesn't use up someone else's email limit.
+async function checkRateLimits(client, body, ip) {
+  if (ip) {
+    const wait = await recordAttempt(client, `ip:${ip}`, MAX_WEB_ATTEMPTS_PER_MINUTE);
+    if (wait) return wait;
+  }
+  const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '';
+  return email ? recordAttempt(client, `email:${email}`, MAX_ATTEMPTS_PER_MINUTE) : 0;
+}
 
-    await client.query('INSERT INTO booking_attempts (email) VALUES ($1)', [email]);
-    return 0;
-  });
+// Records an attempt against rateKey. Returns 0 if allowed, otherwise the
+// number of seconds until the oldest attempt in the window expires.
+async function recordAttempt(client, rateKey, max) {
+  // One lock per key so simultaneous attempts are counted one at a time.
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [rateKey]);
+  await client.query(
+    "DELETE FROM booking_attempts WHERE rate_key = $1 AND attempted_at <= clock_timestamp() - interval '60 seconds'",
+    [rateKey]
+  );
+  const { rows } = await client.query(
+    `SELECT count(*)::int AS attempts,
+            ceil(extract(epoch FROM min(attempted_at) + interval '60 seconds' - clock_timestamp()))::int AS wait
+     FROM booking_attempts WHERE rate_key = $1`,
+    [rateKey]
+  );
+  if (rows[0].attempts >= max) return Math.max(1, rows[0].wait);
+
+  await client.query('INSERT INTO booking_attempts (rate_key) VALUES ($1)', [rateKey]);
+  return 0;
 }
 
 module.exports = {
@@ -135,5 +156,4 @@ module.exports = {
   hashBody,
   findIdempotencyKey,
   createBooking,
-  checkRateLimit,
 };
