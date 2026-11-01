@@ -83,7 +83,7 @@
   <section class="card">
     <h2>Find a booking</h2>
     <form id="lookup-form" class="row">
-      <input id="lookup-id" placeholder="Booking ID" style="flex: 1; min-width: 200px;">
+      <input id="lookup-id" placeholder="Booking ID, like A7K2-9QXM-3F" style="flex: 1; min-width: 200px;">
       <button type="submit" class="secondary">Look up</button>
     </form>
     <div id="lookup-result"></div>
@@ -242,8 +242,17 @@
   function showConfirmation(b, slot) {
     $('confirmation').hidden = false;
     $('confirmation').innerHTML = `<h2>You're booked ✓</h2>
-      <p class="sub" style="margin: 0;">Keep your booking ID to look it up or cancel later.</p>
-      ${bookingDetails(b, slot)}`;
+      <p class="sub" style="margin: 0;">Save your booking ID. You'll need it to look up or cancel this booking.</p>
+      ${bookingDetails(b, slot)}
+      <button type="button" class="secondary" id="copy-id">Copy booking ID</button>`;
+    $('copy-id').onclick = async (e) => {
+      try {
+        await navigator.clipboard.writeText(b.id);
+        e.target.textContent = 'Copied ✓';
+      } catch {
+        e.target.textContent = 'Couldn\'t copy. Please write it down.';
+      }
+    };
     $('confirmation').scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 

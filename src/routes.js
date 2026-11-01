@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool, withTransaction } = require('./db');
 const {
+  normalizeBookingId,
   toBooking,
   hashBody,
   findIdempotencyKey,
@@ -93,7 +94,7 @@ async function postBooking(req, res, ip) {
 // --- Level 1: get a booking --------------------------------------------------
 
 async function getBooking(req, res) {
-  const { rows } = await pool.query('SELECT * FROM bookings WHERE id = $1', [req.params.id]);
+  const { rows } = await pool.query('SELECT * FROM bookings WHERE id = $1', [normalizeBookingId(req.params.id)]);
   if (!rows[0]) return res.status(404).json({ error: 'booking not found' });
   res.json(toBooking(rows[0]));
 }
@@ -101,13 +102,14 @@ async function getBooking(req, res) {
 // --- Level 3: cancel ---------------------------------------------------------
 
 async function cancelBooking(req, res) {
+  const id = normalizeBookingId(req.params.id);
   const { rows } = await pool.query(
     "UPDATE bookings SET status = 'cancelled' WHERE id = $1 AND status = 'confirmed' RETURNING *",
-    [req.params.id]
+    [id]
   );
   if (rows[0]) return res.json(toBooking(rows[0]));
 
-  const { rowCount } = await pool.query('SELECT 1 FROM bookings WHERE id = $1', [req.params.id]);
+  const { rowCount } = await pool.query('SELECT 1 FROM bookings WHERE id = $1', [id]);
   if (!rowCount) return res.status(404).json({ error: 'booking not found' });
   res.status(409).json({ error: 'booking is already cancelled' });
 }

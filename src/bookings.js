@@ -4,6 +4,25 @@ const { pool, withTransaction } = require('./db');
 const MAX_ATTEMPTS_PER_MINUTE = 5;
 const MAX_WEB_ATTEMPTS_PER_MINUTE = 10;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// No 0, O, 1 or I, which are easy to mix up when reading a code out.
+const ID_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const ID_LENGTH = 10;
+
+const formatBookingId = (code) => `${code.slice(0, 4)}-${code.slice(4, 8)}-${code.slice(8)}`;
+
+// Short enough to read out, but with about a quadrillion possibilities, because
+// on the public page knowing the ID is what lets someone cancel a booking.
+function newBookingId() {
+  let code = '';
+  for (let i = 0; i < ID_LENGTH; i++) code += ID_ALPHABET[crypto.randomInt(ID_ALPHABET.length)];
+  return formatBookingId(code);
+}
+
+// Accepts an ID however a patient typed it: lower case, spaces, no dashes.
+function normalizeBookingId(id) {
+  const code = id.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return code.length === ID_LENGTH ? formatBookingId(code) : code;
+}
 
 function toBooking(row) {
   return {
@@ -58,7 +77,7 @@ async function bookSlot(client, body) {
   const { rows } = await client.query(
     `INSERT INTO bookings (id, slot_id, name, email, status)
      VALUES ($1, $2, $3, $4, 'confirmed') RETURNING *`,
-    [crypto.randomUUID(), slot.id, name, email]
+    [newBookingId(), slot.id, name, email]
   );
   return { status: 201, body: toBooking(rows[0]) };
 }
@@ -152,6 +171,7 @@ async function recordAttempt(client, rateKey, max) {
 }
 
 module.exports = {
+  normalizeBookingId,
   toBooking,
   hashBody,
   findIdempotencyKey,

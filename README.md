@@ -30,7 +30,7 @@ All state lives in Postgres, not in memory, so it works on serverless and across
 
 The page at `/` lets a patient see available slots (filterable by doctor), book one, see the confirmation, and look up or cancel a booking by ID.
 
-Putting the API key in the page's JavaScript would leak it to anyone who opens dev tools. Instead, the page calls `/web/*`, which runs the same handlers without the key check. Because those routes are public, they only do what a patient needs. There's no reset and no listing by email, since anyone who knew a patient's email could otherwise see their bookings and get the IDs needed to cancel them. Booking IDs are random UUIDs, so they can't be guessed. The keyed API is for other systems; the page is the public patient-facing part.
+Putting the API key in the page's JavaScript would leak it to anyone who opens dev tools. Instead, the page calls `/web/*`, which runs the same handlers without the key check. Because those routes are public, they only do what a patient needs. There's no reset and no listing by email, since anyone who knew a patient's email could otherwise see their bookings and get the IDs needed to cancel them. Booking IDs are short random codes like `A7K2-9QXM-3F`, easy for a patient to save or read out. With about a quadrillion possibilities they're still impractical to guess, and they leave out characters that are easy to mix up (`0`/`O`, `1`/`I`). Lookups ignore case, spaces and dashes. The keyed API is for other systems; the page is the public patient-facing part.
 
 ## Running locally
 

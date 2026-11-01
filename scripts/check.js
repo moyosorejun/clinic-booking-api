@@ -67,6 +67,9 @@ const slots = [
   const booking = r.data;
   r = await call('GET', `/bookings/${booking.id}`);
   check('get booking', r.status === 200 && r.data.id === booking.id);
+  check('booking id is a short code', /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{2}$/.test(booking.id), booking.id);
+  r = await call('GET', `/bookings/${encodeURIComponent(` ${booking.id.replaceAll('-', '').toLowerCase()} `)}`);
+  check('lookup ignores case, spaces and dashes', r.status === 200 && r.data.id === booking.id, r.status);
   check('unknown booking -> 404', (await call('GET', '/bookings/nope')).status === 404);
   r = await call('GET', '/slots');
   check('booked slot unavailable', r.data.slots.find((s) => s.id === 's1').available === false);
