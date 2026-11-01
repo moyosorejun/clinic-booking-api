@@ -1,0 +1,23 @@
+{
+  "name": "clinic-booking-api",
+  "version": "1.0.0",
+  "description": "Clinic appointment booking API and web page",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "db:setup": "node scripts/setup-db.js",
+    "check": "node scripts/check.js",
+    "seed": "node scripts/seed.js"
+  },
+  "license": "ISC",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.1",
+    "express": "^5.2.1",
+    "pg": "^8.20.0"
+  }
+}

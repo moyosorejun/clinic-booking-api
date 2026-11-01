@@ -1,0 +1,139 @@
+const crypto = require('crypto');
+const { pool, withTransaction } = require('./db');
+
+const MAX_ATTEMPTS_PER_MINUTE = 5;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function toBooking(row) {
+  return {
+    id: row.id,
+    slot_id: row.slot_id,
+    name: row.name,
+    email: row.email,
+    status: row.status,
+    created_at: row.created_at.toISOString(),
+  };
+}
+
+function validateBooking(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return 'request body must be a JSON object';
+  }
+  for (const field of ['slot_id', 'name', 'email']) {
+    if (typeof body[field] !== 'string' || body[field].trim() === '') {
+      return `${field} is required`;
+    }
+  }
+  if (!EMAIL_RE.test(body.email.trim())) return 'email is not valid';
+  return null;
+}
+
+// Books a slot using an open transaction. Returns { status, body }.
+async function bookSlot(client, body) {
+  const problem = validateBooking(body);
+  if (problem) return { status: 400, body: { error: problem } };
+
+  const name = body.name.trim();
+  const email = body.email.trim().toLowerCase();
+
+  // FOR UPDATE locks the slot row, so two requests for the same slot
+  // queue up here instead of both seeing it as free.
+  const { rows: slots } = await client.query(
+    'SELECT id, start_time FROM slots WHERE id = $1 FOR UPDATE',
+    [body.slot_id]
+  );
+  const slot = slots[0];
+  if (!slot) return { status: 404, body: { error: 'slot not found' } };
+  if (slot.start_time <= new Date()) {
+    return { status: 400, body: { error: 'slot has already started' } };
+  }
+
+  const { rowCount: taken } = await client.query(
+    "SELECT 1 FROM bookings WHERE slot_id = $1 AND status = 'confirmed'",
+    [slot.id]
+  );
+  if (taken) return { status: 409, body: { error: 'slot is already booked' } };
+
+  const { rows } = await client.query(
+    `INSERT INTO bookings (id, slot_id, name, email, status)
+     VALUES ($1, $2, $3, $4, 'confirmed') RETURNING *`,
+    [crypto.randomUUID(), slot.id, name, email]
+  );
+  return { status: 201, body: toBooking(rows[0]) };
+}
+
+function hashBody(body) {
+  const sorted = body && typeof body === 'object' ? Object.keys(body).sort() : undefined;
+  return crypto.createHash('sha256').update(JSON.stringify(body ?? null, sorted)).digest('hex');
+}
+
+async function findIdempotencyKey(key) {
+  const { rows } = await pool.query(
+    'SELECT request_hash, status_code, response FROM idempotency_keys WHERE key = $1',
+    [key]
+  );
+  return rows[0] || null;
+}
+
+// Creates a booking. With an idempotency key, the key is claimed in the same
+// transaction as the booking: a concurrent request with the same key blocks on
+// the INSERT until this one commits, then reads back the saved response.
+async function createBooking(body, idempotencyKey, requestHash) {
+  return withTransaction(async (client) => {
+    if (idempotencyKey) {
+      const claimed = await client.query(
+        `INSERT INTO idempotency_keys (key, request_hash, status_code, response)
+         VALUES ($1, $2, 0, '{}') ON CONFLICT (key) DO NOTHING`,
+        [idempotencyKey, requestHash]
+      );
+      if (claimed.rowCount === 0) {
+        const { rows } = await client.query(
+          'SELECT request_hash, status_code, response FROM idempotency_keys WHERE key = $1',
+          [idempotencyKey]
+        );
+        return { saved: rows[0] };
+      }
+    }
+
+    const result = await bookSlot(client, body);
+
+    if (idempotencyKey) {
+      await client.query(
+        'UPDATE idempotency_keys SET status_code = $2, response = $3 WHERE key = $1',
+        [idempotencyKey, result.status, result.body]
+      );
+    }
+    return result;
+  });
+}
+
+// Records a booking attempt for this email. Returns 0 if allowed, otherwise
+// the number of seconds until the oldest attempt in the window expires.
+async function checkRateLimit(email) {
+  return withTransaction(async (client) => {
+    // One lock per email so simultaneous attempts are counted one at a time.
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [email]);
+    await client.query(
+      "DELETE FROM booking_attempts WHERE email = $1 AND attempted_at <= clock_timestamp() - interval '60 seconds'",
+      [email]
+    );
+    const { rows } = await client.query(
+      `SELECT count(*)::int AS attempts,
+              ceil(extract(epoch FROM min(attempted_at) + interval '60 seconds' - clock_timestamp()))::int AS wait
+       FROM booking_attempts WHERE email = $1`,
+      [email]
+    );
+    if (rows[0].attempts >= MAX_ATTEMPTS_PER_MINUTE) return Math.max(1, rows[0].wait);
+
+    await client.query('INSERT INTO booking_attempts (email) VALUES ($1)', [email]);
+    return 0;
+  });
+}
+
+module.exports = {
+  toBooking,
+  hashBody,
+  findIdempotencyKey,
+  createBooking,
+  checkRateLimit,
+};
